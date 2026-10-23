@@ -1,0 +1,20 @@
+{
+  "name": "Goku lattin",
+  "version": "0.1.0",
+  "scrapers": [
+    {
+      "id": "goku-lattin",
+      "name": "Goku lattin",
+      "description": "Películas en español latino. Versión experimental.",
+      "version": "0.1.0",
+      "author": "Goku lattin",
+      "filename": "providers/goku-lattin.js",
+      "supportedTypes": ["movie"],
+      "contentLanguage": ["es"],
+      "formats": ["m3u8"],
+      "enabled": true,
+      "logo": "",
+      "supportsExternalPlayer": true
+    }
+  ]
+}
