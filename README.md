@@ -7,7 +7,7 @@ Plugin nativo experimental para Nuvio, versión 0.1.0. Muestra la marca propia �
 - Ocho pruebas automatizadas superadas con `npm test`.
 - Prueba de red del 23 de octubre de 2026: la búsqueda de IMDb `tt6685538` encontró una ficha con coincidencia exacta de IMDb, resolvió un reproductor y devolvió un resultado HLS «Latino · 720p» en aproximadamente 3,3 segundos.
 - Se pudieron leer la lista HLS principal y una lista secundaria con segmentos anunciados. No se descargaron ni decodificaron los segmentos ni se probó la reproducción en un dispositivo Nuvio.
-- No hay todavía un enlace público de instalación. Los archivos están preparados localmente y publicar requiere autorización.
+- Publicado con autorización en el [repositorio Goku lattin](https://github.com/raiderking2022-wq/goku-lattin). La reproducción en el dispositivo sigue pendiente de comprobar.
 
 El resultado de una prueba no garantiza que otros títulos, redes o dispositivos funcionen. Los enlaces firmados se resuelven de nuevo en cada consulta, no se guardan en el repositorio.
 
@@ -31,7 +31,15 @@ La función exportada es `getStreams(tmdbId, mediaType, season, episode)`. El co
 
 La [respuesta pública de Cinemeta usada en la prueba](https://v3-cinemeta.strem.io/meta/movie/tt6685538.json) proporciona el nombre y el identificador IMDb del título.
 
-## Instalación, después de publicar
+## Instalación
+
+Añade esta URL en la sección de plugins de Nuvio:
+
+```text
+https://raw.githubusercontent.com/raiderking2022-wq/goku-lattin/main/manifest.json
+```
+
+Puedes abrir el [manifiesto público](https://raw.githubusercontent.com/raiderking2022-wq/goku-lattin/main/manifest.json) y el [proveedor publicado](https://raw.githubusercontent.com/raiderking2022-wq/goku-lattin/main/providers/goku-lattin.js) para inspeccionarlos.
 
 El alojamiento debe servir estos dos archivos sin iniciar sesión, conservando sus rutas:
 
