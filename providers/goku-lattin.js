@@ -1,14 +1,17 @@
-/* Goku lattin 0.1.1. Native Nuvio provider. No eval, Node imports or embedded keys.
+/* Goku lattin 0.1.2. Native Nuvio provider. No eval, Node imports or embedded keys.
  * Presentation branding is not network anonymity. Only use authorized content.
  */
 'use strict';
 var NAME = 'Goku lattin';
 var BASE = 'https://www.cinecalidad.my';
 var UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36';
+var REQUEST_TIMEOUT_MS = 6500;
+var SEARCH_TIMEOUT_MS = 26000;
+var TIMER_SLICE_MS = 100;
 function report(stage, detail) {
   // Never log request URLs, credentials, signed streams or upstream filenames.
   if (typeof console !== 'undefined' && typeof console.log === 'function') {
-    console.log('[Goku lattin 0.1.1] ' + stage + (detail ? ': ' + detail : ''));
+    console.log('[Goku lattin 0.1.2] ' + stage + (detail ? ': ' + detail : ''));
   }
 }
 
@@ -33,29 +36,77 @@ function attributes(tag) {
     m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
   return out;
 }
-function request(url, referer) {
-  if (!/^https:\/\//i.test(url)) return Promise.reject(new Error('invalid_url'));
-  var controller = typeof AbortController === 'function' ? new AbortController() : null;
-  var timer = null;
-  if (controller && typeof setTimeout === 'function') {
-    timer = setTimeout(function () { controller.abort(); }, 12000);
+function deadlineTimer(callback, milliseconds) {
+  // Nuvio's clearTimeout removes the JS callback but cannot cancel the native
+  // sleep coroutine. Short cancellable polling leaves at most one small sleep,
+  // instead of keeping a successful lookup's worker alive for 26 seconds.
+  if (typeof __plugin_sleep === 'function') {
+    var cancelled = false, end = Date.now() + milliseconds;
+    function tick() {
+      if (cancelled) return;
+      var remaining = end - Date.now();
+      if (remaining <= 0) { cancelled = true; callback(); return; }
+      Promise.resolve(__plugin_sleep(Math.min(TIMER_SLICE_MS, remaining))).then(tick,
+        function () { if (!cancelled) { cancelled = true; callback(); } });
+    }
+    tick();
+    return function () { cancelled = true; };
   }
+  if (typeof setTimeout === 'function') {
+    var id = setTimeout(callback, milliseconds);
+    return function () { if (typeof clearTimeout === 'function') clearTimeout(id); };
+  }
+  return null;
+}
+function timeLimited(work, milliseconds, onTimeout) {
+  // The Android bridge ignores fetch's signal. Reject independently of abort().
+  if (typeof setTimeout !== 'function' && typeof __plugin_sleep !== 'function') {
+    return Promise.resolve().then(work);
+  }
+  return new Promise(function (resolve, reject) {
+    var done = false;
+    var stopTimer = deadlineTimer(function () {
+      if (done) return;
+      done = true;
+      if (onTimeout) { try { onTimeout(); } catch (_) {} }
+      reject(new Error('request_timeout'));
+    }, Math.max(1, milliseconds));
+    function finish(fn, value) {
+      if (done) return;
+      done = true;
+      if (stopTimer) stopTimer();
+      fn(value);
+    }
+    Promise.resolve().then(work).then(function (value) { finish(resolve, value); },
+      function (e) { finish(reject, e); });
+  });
+}
+function jobStopped(job) {
+  return !!(job && (job.cancelled || Date.now() >= job.deadline));
+}
+function request(url, referer, job) {
+  if (!/^https:\/\//i.test(url)) return Promise.reject(new Error('invalid_url'));
+  if (jobStopped(job)) return Promise.reject(new Error('search_timeout'));
+  var controller = typeof AbortController === 'function' ? new AbortController() : null;
   var options = { headers: { 'User-Agent': UA, 'Referer': referer || BASE + '/' } };
   if (controller) options.signal = controller.signal;
-  return fetch(url, options).then(function (r) {
-    if (r.ok === false || (typeof r.status === 'number' && r.status >= 400)) {
-      throw new Error('http_' + r.status);
-    }
-    return r.text().then(function (body) {
-      if (body.length > 2500000) throw new Error('response_too_large');
-      return { text: body, url: r.url || url };
+  var budget = job ? Math.min(REQUEST_TIMEOUT_MS, job.deadline - Date.now()) : REQUEST_TIMEOUT_MS;
+  var consumesRemainingBudget = job && budget < REQUEST_TIMEOUT_MS;
+  return timeLimited(function () {
+    return fetch(url, options).then(function (r) {
+      if (jobStopped(job)) throw new Error('search_timeout');
+      if (r.ok === false || (typeof r.status === 'number' && r.status >= 400)) {
+        throw new Error('http_' + r.status);
+      }
+      return Promise.resolve(r.text()).then(function (body) {
+        if (jobStopped(job)) throw new Error('search_timeout');
+        if (body.length > 2500000) throw new Error('response_too_large');
+        return { text: body, url: r.url || url };
+      });
     });
-  }).then(function (r) {
-    if (timer) clearTimeout(timer);
-    return r;
-  }, function (e) {
-    if (timer) clearTimeout(timer);
-    throw e;
+  }, budget, function () {
+    if (consumesRemainingBudget) job.cancelled = true;
+    if (controller) controller.abort();
   });
 }
 function base64(input) {
@@ -120,10 +171,10 @@ function movieInfo(html) {
     players: players.slice(0, 3)
   };
 }
-function metadata(id) {
+function metadata(id, job) {
   var imdb = /^(?:imdb:)?(tt\d{5,12})$/.exec(id);
   if (imdb) {
-    return imdbMetadata(imdb[1]);
+    return imdbMetadata(imdb[1], job);
   }
   var numeric = /^(?:tmdb:)?(\d{1,10})$/.exec(id);
   var key = typeof TMDB_API_KEY !== 'undefined' ? TMDB_API_KEY : '';
@@ -135,18 +186,18 @@ function metadata(id) {
     var query = 'SELECT ?imdb WHERE {?item wdt:P4947 "' + numeric[1] +
       '"; wdt:P345 ?imdb} LIMIT 1';
     return request('https://query.wikidata.org/sparql?query=' +
-      encodeURIComponent(query) + '&format=json', 'https://query.wikidata.org/').then(function (r) {
+      encodeURIComponent(query) + '&format=json', 'https://query.wikidata.org/', job).then(function (r) {
       var data = JSON.parse(r.text);
       var bindings = data.results && data.results.bindings;
       var value = bindings && bindings[0] && bindings[0].imdb && bindings[0].imdb.value;
       if (!/^tt\d{5,12}$/.test(value || '')) throw new Error('metadata_id_not_found');
-      return imdbMetadata(value);
+      return imdbMetadata(value, job);
     });
   }
   if (!key) return withoutKey();
   // Key is injected by Nuvio. Never stored, logged or sent to other hosts.
   return request('https://api.themoviedb.org/3/movie/' + numeric[1] +
-    '?language=es-MX&api_key=' + encodeURIComponent(key)).then(function (r) {
+    '?language=es-MX&api_key=' + encodeURIComponent(key), null, job).then(function (r) {
     var meta = JSON.parse(r.text);
     if (!/^tt\d{5,12}$/.test(meta.imdb_id || '')) throw new Error('missing_imdb');
     return { imdb: meta.imdb_id, titles: [meta.title, meta.original_title].filter(Boolean) };
@@ -155,9 +206,9 @@ function metadata(id) {
     return withoutKey();
   });
 }
-function imdbMetadata(id) {
+function imdbMetadata(id, job) {
   return request('https://v3-cinemeta.strem.io/meta/movie/' + id + '.json',
-    'https://v3-cinemeta.strem.io/').then(function (r) {
+    'https://v3-cinemeta.strem.io/', job).then(function (r) {
       var meta = JSON.parse(r.text).meta || {};
       if (!meta.name) throw new Error('metadata_title_missing');
       return { imdb: id, titles: [meta.name] };
@@ -166,10 +217,11 @@ function imdbMetadata(id) {
 function safeError(e) {
   var value = e && e.message || '';
   // Only developer-owned error codes; network errors can contain secret URLs.
-  return /^(?:http_\d+|metadata_[a-z_]+|missing_imdb|invalid_id|not_hls|empty_playlist|playlist_depth|response_too_large)$/.test(value) ?
+  return /^(?:http_\d+|metadata_[a-z_]+|missing_imdb|invalid_id|not_hls|empty_playlist|playlist_depth|response_too_large|request_timeout|search_timeout)$/.test(value) ?
     value : 'network_or_parse_error';
 }
-function findMovie(meta) {
+function findMovie(meta, job) {
+  report('stage', 'source_search');
   var queries = meta.titles.slice(0, 2);
   // Source titles can omit leading articles (e.g. "The Matrix" → "Matrix").
   var withoutArticle = queries[0] && queries[0].replace(/^(?:the|a|an|el|la|los|las|un|una)\s+/i, '');
@@ -182,11 +234,11 @@ function findMovie(meta) {
   }
   var seen = {}, found = null;
   function inspect(urls, i) {
-    if (found || i >= urls.length) return Promise.resolve();
+    if (found || i >= urls.length || jobStopped(job)) return Promise.resolve();
     var u = urls[i];
     if (seen[u]) return inspect(urls, i + 1);
     seen[u] = true;
-    return request(u).then(function (r) {
+    return request(u, null, job).then(function (r) {
       var info = movieInfo(r.text);
       // Exact IMDb match, not loose title matching: avoids wrong remakes.
       if (info.imdb === meta.imdb) found = { url: r.url, info: info };
@@ -194,20 +246,20 @@ function findMovie(meta) {
       .then(function () { return inspect(urls, i + 1); });
   }
   function search(i) {
-    if (found || i >= queries.length) return Promise.resolve(found);
-    return request(BASE + '/?s=' + encodeURIComponent(queries[i])).then(function (r) {
+    if (found || i >= queries.length || jobStopped(job)) return Promise.resolve(found);
+    return request(BASE + '/?s=' + encodeURIComponent(queries[i]), null, job).then(function (r) {
       return inspect(candidates(r.text), 0);
     }).catch(function (e) { report('search_failed', safeError(e)); })
       .then(function () { return search(i + 1); });
   }
   return search(0);
 }
-function resolvePlayer(player, referer) {
+function resolvePlayer(player, referer, job) {
   var visited = {};
   function walk(url, parent, depth) {
-    if (depth > 2 || visited[url]) return Promise.resolve(null);
+    if (depth > 2 || visited[url] || jobStopped(job)) return Promise.resolve(null);
     visited[url] = true;
-    return request(url, parent).then(function (r) {
+    return request(url, parent, job).then(function (r) {
       var cfg = playerConfig(r.text, player.code);
       if (cfg) return { config: cfg, referer: r.url };
       // Follow only the provider's explicit HTTPS location redirect that retains
@@ -245,14 +297,29 @@ function playlist(url, referer, depth) {
     return { height: height };
   });
 }
-function streamsForMovie(movie) {
+function firstUsable(tasks) {
+  if (!tasks.length) return Promise.resolve(null);
+  return new Promise(function (resolve) {
+    var remaining = tasks.length, done = false;
+    tasks.forEach(function (task) {
+      Promise.resolve(task).then(function (result) {
+        if (done) return;
+        if (result) { done = true; resolve(result); return; }
+        if (--remaining === 0) resolve(null);
+      }, function () { if (!done && --remaining === 0) resolve(null); });
+    });
+  });
+}
+function streamsForMovie(movie, job) {
     if (!movie) { report('movie_not_found'); return []; }
     report('online_players', String(movie.info.players.length));
-    return Promise.all(movie.info.players.map(function (player) {
-      return resolvePlayer(player, movie.url).then(function (resolved) {
+    return firstUsable(movie.info.players.map(function (player) {
+      return resolvePlayer(player, movie.url, job).then(function (resolved) {
         if (!resolved) { report('player_config_not_found'); return null; }
-        return playlist(resolved.config.source, resolved.referer, 0).then(function (probe) {
-          var quality = probe.height ? probe.height + 'p' : 'Auto';
+          // The validated player config identifies the exact movie. Let the
+          // actual player negotiate HLS rather than blocking discovery on CDN
+          // master + child preflight requests.
+          var quality = 'Auto';
           var audio = /latino/i.test(movie.info.audio) ? 'Latino' :
             /espa[nñ]ol/i.test(movie.info.audio) ? 'Español' : 'Audio no confirmado';
           var headers = { Referer: resolved.referer, 'User-Agent': UA };
@@ -267,18 +334,11 @@ function streamsForMovie(movie) {
             subtitles: [],
             behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } }
           };
-        });
       }).catch(function (e) { report('player_failed', safeError(e)); return null; });
-    })).then(function (results) {
-      var seen = {};
-      return results.filter(function (s) {
-        if (!s || seen[s.url]) return false;
-        seen[s.url] = true;
-        return true;
-      }).map(function (s, i) {
-        s.title += ' · Servidor ' + (i + 1);
-        return s;
-      });
+    })).then(function (result) {
+      if (!result) return [];
+      result.title += ' · Servidor 1';
+      return [result];
     });
 }
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -287,9 +347,15 @@ function getStreams(tmdbId, mediaType, season, episode) {
   var id = String(tmdbId).trim();
   if (!/^(?:(?:imdb:)?tt\d{5,12}|(?:tmdb:)?\d{1,10})$/.test(id)) return Promise.resolve([]);
   report('start', /^\d+$/.test(id) || /^tmdb:/.test(id) ? 'tmdb' : 'imdb');
-  return metadata(id).then(findMovie).then(streamsForMovie).then(function (streams) {
+  var job = { deadline: Date.now() + SEARCH_TIMEOUT_MS, cancelled: false };
+  return timeLimited(function () {
+    return metadata(id, job).then(function (meta) { return findMovie(meta, job); })
+      .then(function (movie) { return streamsForMovie(movie, job); });
+  }, SEARCH_TIMEOUT_MS, function () { job.cancelled = true; }).then(function (streams) {
+    job.cancelled = true;
     report('streams', String(streams.length)); return streams;
   }).catch(function (e) {
+    job.cancelled = true;
     report('failed', safeError(e)); return [];
   });
 }

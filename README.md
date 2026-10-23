@@ -1,18 +1,35 @@
 # Goku lattin
 
-Plugin nativo experimental para Nuvio, versión 0.1.1. Muestra la marca propia «Goku lattin» en el nombre del proveedor y en las etiquetas de los resultados, sin reutilizar títulos de archivo, logotipos ni nombres comerciales del sitio de origen.
+Plugin nativo experimental para Nuvio, versión 0.1.2. Muestra la marca propia «Goku lattin» en el nombre del proveedor y en las etiquetas de los resultados, sin reutilizar títulos de archivo, logotipos ni nombres comerciales del sitio de origen.
 
-## Actualización para Android
+## Actualización 0.1.2: búsqueda de fuentes en Android
+
+La captura más reciente del usuario muestra la pestaña Goku lattin seleccionada y la búsqueda de fuentes pendiente en Kung Fu Panda 2. El proveedor está siendo incluido en esa pantalla; no se trata únicamente de que falte instalar o activar el repositorio.
+
+Cambios de esta versión:
+
+- Límite lógico de 6,5 segundos por petición y 26 segundos por búsqueda, mediante rechazo de la promesa y no solamente mediante `AbortController`.
+- Adaptación a los temporizadores de Nuvio: cuando existe `__plugin_sleep`, se usan esperas cortas de hasta 100 ms, en lugar de dejar esperas nativas largas pendientes después de completar una búsqueda.
+- Entrega del primer reproductor válido sin esperar a otros servidores lentos.
+- No se consulta el CDN HLS durante el descubrimiento. El enlace debe proceder de la configuración validada del reproductor de la película exacta; la aplicación negocia el vídeo al reproducir.
+- La etiqueta de calidad pasa a «Auto»: no se afirma 1080p o 720p sin inspeccionar el vídeo.
+
+El [puente de red y los temporizadores de Nuvio revisados](https://github.com/NuvioMedia/NuvioMobile/blob/cmp-rewrite/composeApp/src/fullCommonMain/kotlin/com/nuvio/app/features/plugins/runtime/js/JsBindings.kt) no conectan la señal de `AbortController` con la llamada HTTP nativa. Por ello, el temporizador anterior no garantizaba que terminase la promesa del proveedor.
+
+El límite del plugin no garantiza cancelar un socket que la aplicación haya iniciado ni resolver una espera en la interfaz de la propia app. Las pruebas con temporizadores nativos son simulaciones desde Node, no una ejecución en el teléfono del usuario.
+
+Después de actualizar el repositorio en Nuvio, tanto la tarjeta del repositorio como la del proveedor deben mostrar **0.1.2**. El script tiene un parámetro de versión para evitar reutilizar archivos anteriores en caché.
+
+## Corrección de metadatos 0.1.1
 
 La versión 0.1.1 añade una búsqueda alternativa de metadatos cuando la aplicación no inyecta una clave TMDB válida, admite identificadores numéricos sin esa clave y registra códigos de diagnóstico sin guardar URLs ni secretos. También elimina artículos iniciales durante una búsqueda alternativa de títulos, conservando siempre la comprobación exacta de IMDb.
-
-Después de actualizar el repositorio en Nuvio, tanto la tarjeta del repositorio como la del proveedor deben mostrar **0.1.1**. Se cambió también la URL del script con un parámetro de versión para evitar reutilizar el archivo 0.1.0 en caché.
 
 Las capturas del usuario confirmaron la instalación y activación de 0.1.0 en una versión descargada desde GitHub. No demostraron la causa de los resultados vacíos en Android. Esta actualización corrige una dependencia frágil; no se presenta como una reparación ya verificada en el teléfono.
 
 ## Estado comprobado
 
-- Doce pruebas automatizadas superadas con `npm test`.
+- Diecinueve pruebas automatizadas superadas con `npm test`, incluidas peticiones y cuerpos de respuesta que no terminan, cancelación de búsqueda y esperas nativas cortas.
+- Prueba de 0.1.2 con IDs numéricos sin clave y temporizadores similares a Nuvio, sin temporizadores de navegador: una fuente para Nemo (`12`) en aproximadamente 0,85 segundos y una para Kung Fu Panda 2 (`49444`) en aproximadamente 0,54 segundos. La etiqueta es «Latino · Auto». No se ha probado la versión 0.1.2 en el teléfono.
 - Prueba de red del 23 de octubre de 2026: la búsqueda de IMDb `tt6685538` encontró una ficha con coincidencia exacta de IMDb, resolvió un reproductor y devolvió un resultado HLS «Latino · 720p» en aproximadamente 3,3 segundos.
 - Se pudieron leer la lista HLS principal y una lista secundaria con segmentos anunciados. No se descargaron ni decodificaron los segmentos ni se probó la reproducción en un dispositivo Nuvio.
 - Prueba de red adicional con **Buscando a Nemo**, ID TMDB numérico `12`, sin clave TMDB: un resultado HLS latino de 720p; se verificaron el maestro y la lista secundaria. La última ejecución tardó aproximadamente 1,5 segundos.
@@ -25,9 +42,9 @@ El resultado de una prueba no garantiza que otros títulos, redes o dispositivos
 
 - Películas únicamente, no series ni un catálogo de navegación propio.
 - Búsqueda por título traducido y original cuando están disponibles. Cada ficha se valida por IMDb exacto para evitar confundir películas o remakes.
-- Resolución de VOE a HLS; no devuelve páginas HTML como si fueran vídeos.
+- Resolución de VOE a HLS mediante configuración validada del reproductor; no devuelve páginas HTML como si fueran vídeos. En 0.1.2 no se hace una comprobación de disponibilidad del CDN antes de mostrar la fuente.
 - Filemoon/Byse, Doodstream, Mega y enlaces de descarga no están implementados. Una película sin enlace VOE resoluble no devuelve resultados en esta versión.
-- Sin claves API incrustadas, dependencias externas, ejecución de scripts del sitio ni uso de `eval`.
+- Sin claves API incrustadas, dependencias de paquetes, ejecución de scripts del sitio ni uso de `eval`. Sí depende de servicios de red para metadatos, búsqueda y resolución.
 
 La distinción entre plugins locales que devuelven streams y addons de catálogo está descrita en la [guía de plugins de Nuvio](https://nuvio.wiki/integrations/plugins).
 

@@ -91,7 +91,7 @@ test('title search retries without English article and still requires exact IMDb
   assert.equal(movie.info.imdb,'tt0133093');
   assert.ok(seen.some(u=>u.includes('?s=Matrix')));
 });
-test('exact IMDb match and branded output, follows VOE redirect, checks child HLS',async()=>{
+test('exact movie and branded stream; follows redirect without blocking on CDN probes',async()=>{
   const seen=[];
   const c=load(url=>{
     seen.push(url);
@@ -107,12 +107,63 @@ test('exact IMDb match and branded output, follows VOE redirect, checks child HL
   });
   const results=await c.getStreams('459003','movie');
   assert.equal(results.length,1);assert.equal(results[0].name,'Goku lattin');
-  assert.equal(results[0].quality,'1080p');assert.match(results[0].title,/Latino/);
+  assert.equal(results[0].quality,'Auto');assert.match(results[0].title,/Latino/);
   assert.ok(!/cinecalidad|Private|VOE/i.test(results[0].title));
-  assert.ok(seen.includes('https://video.example/child.m3u8'));
+  assert.ok(!seen.some(u=>u.includes('video.example')));
 });
 test('never offers wrong IMDb match or HTML disguised as HLS',async()=>{
   const c=load(url=>response('<html>Error</html>',url));
   await assert.rejects(c.playlist('https://video.example/master.m3u8','https://player.example',0));
   assert.equal((await c.getStreams('tt6685538','movie')).length,0);
+});
+test('request timeout settles even if fetch ignores AbortController.signal',async()=>{
+  let aborts=0;
+  const c=load(()=>new Promise(()=>{}));
+  c.setTimeout=setTimeout;c.clearTimeout=clearTimeout;c.REQUEST_TIMEOUT_MS=15;
+  c.AbortController=function(){this.signal={};this.abort=()=>{aborts++;};};
+  const start=Date.now();
+  await assert.rejects(c.request('https://ignored-signal.example/'),/request_timeout/);
+  assert.equal(aborts,1);assert.ok(Date.now()-start<500);
+});
+test('response body timeout is bounded as well as initial fetch',async()=>{
+  const c=load(()=>Promise.resolve({ok:true,status:200,text:()=>new Promise(()=>{})}));
+  c.setTimeout=setTimeout;c.clearTimeout=clearTimeout;c.REQUEST_TIMEOUT_MS=15;
+  await assert.rejects(c.request('https://slow-body.example/'),/request_timeout/);
+});
+test('global search budget resolves empty and stops launching extra requests',async()=>{
+  let calls=0;
+  const c=load(()=>{calls++;return new Promise(()=>{});});
+  c.setTimeout=setTimeout;c.clearTimeout=clearTimeout;
+  c.SEARCH_TIMEOUT_MS=25;c.REQUEST_TIMEOUT_MS=1000;
+  const start=Date.now(),result=await c.getStreams('12','movie');
+  assert.equal(result.length,0);assert.ok(Date.now()-start<500);
+  await new Promise(r=>setTimeout(r,40));assert.equal(calls,1);
+});
+test('first useful player wins without waiting for a stalled second player',async()=>{
+  const c=load();c.setTimeout=setTimeout;c.clearTimeout=clearTimeout;
+  const result=await c.firstUsable([new Promise(()=>{}),Promise.resolve({url:'https://video.example/movie.m3u8'})]);
+  assert.equal(result.url,'https://video.example/movie.m3u8');
+});
+test('no network work starts after a search is cancelled',async()=>{
+  let calls=0;
+  const c=load(()=>{calls++;throw Error('not expected');});
+  await assert.rejects(c.request('https://source.example/',null,{cancelled:true}),/search_timeout/);
+  assert.equal(calls,0);
+});
+test('Nuvio native sleep timers are short and stop polling after completion',async()=>{
+  const sleeps=[],c=load();
+  c.TIMER_SLICE_MS=5;
+  c.__plugin_sleep=ms=>{
+    sleeps.push(ms);return new Promise(r=>setTimeout(r,ms));
+  };
+  assert.equal(await c.timeLimited(()=>Promise.resolve('done'),26000),'done');
+  await new Promise(r=>setTimeout(r,30));
+  assert.equal(sleeps.length,1);assert.ok(sleeps.every(ms=>ms<=5));
+});
+test('native-sleep-only environment enforces timeout without browser timers',async()=>{
+  const c=load();c.TIMER_SLICE_MS=5;
+  c.__plugin_sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const start=Date.now();
+  await assert.rejects(c.timeLimited(()=>new Promise(()=>{}),15),/request_timeout/);
+  assert.ok(Date.now()-start<500);
 });
