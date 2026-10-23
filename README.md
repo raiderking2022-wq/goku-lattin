@@ -1,6 +1,25 @@
 # Goku lattin
 
-Plugin nativo experimental para Nuvio, versión 0.1.2. Muestra la marca propia «Goku lattin» en el nombre del proveedor y en las etiquetas de los resultados, sin reutilizar títulos de archivo, logotipos ni nombres comerciales del sitio de origen.
+Plugin nativo experimental para Nuvio, versión 0.1.3. Muestra la marca propia «Goku lattin» en el nombre del proveedor y en las etiquetas de los resultados, sin reutilizar títulos de archivo, logotipos ni nombres comerciales del sitio de origen.
+
+## Versión 0.1.3: diagnóstico visible desde el teléfono
+
+El usuario sigue informando que no obtiene fuentes; las últimas capturas muestran fuentes de otros proveedores, pero no una versión instalada ni la causa del fallo. Los éxitos de las pruebas desde el sandbox no demuestran que funcione en el Android del usuario.
+
+Esta versión añade `hasSettings` y `onSettings` para mostrar una comprobación real desde el dispositivo, usando los campos de solo lectura `header` e `info` que admite el [diálogo de ajustes de Nuvio revisado](https://github.com/NuvioMedia/NuvioMobile/blob/cmp-rewrite/composeApp/src/fullCommonMain/kotlin/com/nuvio/app/features/plugins/PluginSettingsDialog.kt). No se presenta como otra reparación ya confirmada.
+
+Para abrirlo:
+
+1. Actualizar el repositorio y comprobar **0.1.3** en la tarjeta del proveedor.
+2. En la sección de proveedores, pulsar el engranaje de **Goku lattin**, junto al interruptor. No es el botón azul de prueba.
+3. Esperar mientras se consulta Kung Fu Panda 2 desde el dispositivo.
+4. Compartir la pantalla de «Resultado» y las filas con «ERROR», si aparecen.
+
+El diagnóstico muestra qué pasos responden, sus códigos HTTP o errores seguros y el tiempo empleado: metadatos de la app, correspondencia de ID, título, búsqueda, ficha y reproductor. También permite distinguir un error HTTP de una consulta sin coincidencias.
+
+No muestra claves, cookies, cuerpos de respuesta, URLs de vídeo ni nombres de dominio del origen. No envía registros a un servicio externo. Ejecuta solamente las consultas normales necesarias para esa película de prueba cuando el usuario abre la configuración; no guarda un historial de búsquedas.
+
+Se verificó desde Node con una simulación de temporizadores nativos: el panel devolvió un resultado y todas las etapas HTTP en aproximadamente 1,2 segundos. Falta observarlo en el teléfono y confirmar allí la causa del problema.
 
 ## Actualización 0.1.2: búsqueda de fuentes en Android
 
@@ -18,7 +37,7 @@ El [puente de red y los temporizadores de Nuvio revisados](https://github.com/Nu
 
 El límite del plugin no garantiza cancelar un socket que la aplicación haya iniciado ni resolver una espera en la interfaz de la propia app. Las pruebas con temporizadores nativos son simulaciones desde Node, no una ejecución en el teléfono del usuario.
 
-Después de actualizar el repositorio en Nuvio, tanto la tarjeta del repositorio como la del proveedor deben mostrar **0.1.2**. El script tiene un parámetro de versión para evitar reutilizar archivos anteriores en caché.
+La versión actual es **0.1.3**. El script tiene un parámetro de versión para evitar reutilizar archivos anteriores en caché.
 
 ## Corrección de metadatos 0.1.1
 
@@ -28,7 +47,7 @@ Las capturas del usuario confirmaron la instalación y activación de 0.1.0 en u
 
 ## Estado comprobado
 
-- Diecinueve pruebas automatizadas superadas con `npm test`, incluidas peticiones y cuerpos de respuesta que no terminan, cancelación de búsqueda y esperas nativas cortas.
+- Veintidós pruebas automatizadas superadas con `npm test`, incluidas peticiones y cuerpos de respuesta que no terminan, cancelación de búsqueda, esperas nativas cortas y panel de diagnóstico con errores HTTP sin secretos.
 - Prueba de 0.1.2 con IDs numéricos sin clave y temporizadores similares a Nuvio, sin temporizadores de navegador: una fuente para Nemo (`12`) en aproximadamente 0,85 segundos y una para Kung Fu Panda 2 (`49444`) en aproximadamente 0,54 segundos. La etiqueta es «Latino · Auto». No se ha probado la versión 0.1.2 en el teléfono.
 - Prueba de red del 23 de octubre de 2026: la búsqueda de IMDb `tt6685538` encontró una ficha con coincidencia exacta de IMDb, resolvió un reproductor y devolvió un resultado HLS «Latino · 720p» en aproximadamente 3,3 segundos.
 - Se pudieron leer la lista HLS principal y una lista secundaria con segmentos anunciados. No se descargaron ni decodificaron los segmentos ni se probó la reproducción en un dispositivo Nuvio.

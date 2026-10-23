@@ -1,4 +1,4 @@
-/* Goku lattin 0.1.2. Native Nuvio provider. No eval, Node imports or embedded keys.
+/* Goku lattin 0.1.3. Native Nuvio provider. No eval, Node imports or embedded keys.
  * Presentation branding is not network anonymity. Only use authorized content.
  */
 'use strict';
@@ -8,11 +8,29 @@ var UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0.0.0 Mo
 var REQUEST_TIMEOUT_MS = 6500;
 var SEARCH_TIMEOUT_MS = 26000;
 var TIMER_SLICE_MS = 100;
+var DIAGNOSTIC = null;
 function report(stage, detail) {
   // Never log request URLs, credentials, signed streams or upstream filenames.
   if (typeof console !== 'undefined' && typeof console.log === 'function') {
-    console.log('[Goku lattin 0.1.2] ' + stage + (detail ? ': ' + detail : ''));
+    console.log('[Goku lattin 0.1.3] ' + stage + (detail ? ': ' + detail : ''));
   }
+  if (DIAGNOSTIC && DIAGNOSTIC.events.length < 12) {
+    DIAGNOSTIC.events.push(stage + (detail ? ': ' + detail : ''));
+  }
+}
+function diagnosticStage(url) {
+  if (url.indexOf('https://api.themoviedb.org/') === 0) return 'M1 · Metadatos de la app';
+  if (url.indexOf('https://query.wikidata.org/') === 0) return 'M2 · Correspondencia de ID';
+  if (url.indexOf('https://v3-cinemeta.strem.io/') === 0) return 'M3 · Título de la película';
+  if (url.indexOf(BASE + '/?s=') === 0) return 'S1 · Búsqueda del origen';
+  if (url.indexOf(BASE + '/pelicula/') === 0) return 'S2 · Ficha del origen';
+  return 'P1 · Servidor de vídeo';
+}
+function startDiagnosticRequest(url) {
+  if (!DIAGNOSTIC || DIAGNOSTIC.requests.length >= 25) return null;
+  var item = { stage: diagnosticStage(url), start: Date.now(), status: 'pendiente' };
+  DIAGNOSTIC.requests.push(item);
+  return item;
 }
 
 function absolute(value, base) {
@@ -87,6 +105,7 @@ function jobStopped(job) {
 function request(url, referer, job) {
   if (!/^https:\/\//i.test(url)) return Promise.reject(new Error('invalid_url'));
   if (jobStopped(job)) return Promise.reject(new Error('search_timeout'));
+  var diagnostic = startDiagnosticRequest(url);
   var controller = typeof AbortController === 'function' ? new AbortController() : null;
   var options = { headers: { 'User-Agent': UA, 'Referer': referer || BASE + '/' } };
   if (controller) options.signal = controller.signal;
@@ -101,12 +120,27 @@ function request(url, referer, job) {
       return Promise.resolve(r.text()).then(function (body) {
         if (jobStopped(job)) throw new Error('search_timeout');
         if (body.length > 2500000) throw new Error('response_too_large');
+        if (diagnostic) {
+          diagnostic.status = 'OK HTTP ' + (r.status || '2xx');
+          if (/cf-chl-|checking your browser|just a moment|captcha/i.test(body)) {
+            diagnostic.status += ' · posible protección';
+          }
+        }
         return { text: body, url: r.url || url };
       });
     });
   }, budget, function () {
     if (consumesRemainingBudget) job.cancelled = true;
     if (controller) controller.abort();
+  }).then(function (value) {
+    if (diagnostic) diagnostic.elapsed = Date.now() - diagnostic.start;
+    return value;
+  }, function (e) {
+    if (diagnostic) {
+      diagnostic.status = 'ERROR ' + safeError(e);
+      diagnostic.elapsed = Date.now() - diagnostic.start;
+    }
+    throw e;
   });
 }
 function base64(input) {
@@ -359,4 +393,43 @@ function getStreams(tmdbId, mediaType, season, episode) {
     report('failed', safeError(e)); return [];
   });
 }
-module.exports = { getStreams: getStreams };
+function onSettings() {
+  // Runs only when the user opens the provider's settings. No telemetry,
+  // credentials, signed URLs, cookies or remote response bodies are displayed.
+  var diagnostic = { requests: [], events: [] };
+  DIAGNOSTIC = diagnostic;
+  var layout = [
+    { type: 'header', label: 'Diagnóstico Goku lattin 0.1.3' },
+    { type: 'info', label: 'Prueba: Kung Fu Panda 2. Esta ventana comprueba la conexión desde tu dispositivo.' },
+    { type: 'info', label: 'Motor JS: ejecutándose. Temporizador: ' +
+      (typeof __plugin_sleep === 'function' ? 'nativo de Nuvio' :
+        typeof setTimeout === 'function' ? 'estándar' : 'no disponible') },
+    { type: 'info', label: 'Clave de metadatos de la app: ' +
+      (typeof TMDB_API_KEY !== 'undefined' && TMDB_API_KEY ? 'disponible (no se muestra)' : 'no disponible; se usará la alternativa pública') }
+  ];
+  function finish(streams, error) {
+    DIAGNOSTIC = null;
+    layout.push({type:'header',label:'Resultado: ' + (streams && streams.length ?
+      streams.length + ' fuente encontrada' : 'sin fuentes')});
+    if (error) layout.push({type:'info',label:'Error final: ' + safeError(error)});
+    if (!diagnostic.requests.length) {
+      layout.push({type:'info',label:'No se inició ninguna petición HTTP.'});
+    }
+    diagnostic.requests.forEach(function (item) {
+      var elapsed = item.elapsed === undefined ? Date.now() - item.start : item.elapsed;
+      var status = item.status === 'pendiente' ? 'sin completar antes del límite' : item.status;
+      layout.push({type:'info',label:item.stage + '\n' + status + ' · ' +
+        (elapsed / 1000).toFixed(1) + ' s'});
+    });
+    layout.push({type:'header',label:'Etapas del proveedor'});
+    diagnostic.events.forEach(function (event) {
+      layout.push({type:'info',label:event});
+    });
+    layout.push({type:'info',label:'Comparte una captura de Resultado y las peticiones con ERROR. No hace falta guardar ni cambiar ajustes.'});
+    return layout;
+  }
+  return getStreams('49444','movie').then(function (streams) {
+    return finish(streams);
+  }, function (e) { return finish([], e); });
+}
+module.exports = { getStreams: getStreams, onSettings: onSettings };

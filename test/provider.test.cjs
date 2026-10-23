@@ -167,3 +167,39 @@ test('native-sleep-only environment enforces timeout without browser timers',asy
   await assert.rejects(c.timeLimited(()=>new Promise(()=>{}),15),/request_timeout/);
   assert.ok(Date.now()-start<500);
 });
+test('settings diagnostics show failing request on device without exposing secrets',async()=>{
+  const c=load(u=>{
+    if(u.includes('themoviedb'))return Promise.resolve({ok:false,status:403});
+    return Promise.resolve({ok:false,status:429});
+  });
+  c.TMDB_API_KEY='private-do-not-display';
+  const layout=await c.module.exports.onSettings(),rendered=JSON.stringify(layout);
+  assert.ok(layout.every(x=>x.type==='header'||x.type==='info'));
+  assert.match(rendered,/Diagnóstico Goku lattin 0.1.3/);
+  assert.match(rendered,/http_403/);assert.match(rendered,/http_429/);
+  assert.match(rendered,/sin fuentes/);
+  assert.ok(!rendered.includes('private-do-not-display'));
+  assert.ok(!rendered.includes('https://'));
+  assert.ok(!rendered.includes('cinecalidad'));
+  assert.equal(c.DIAGNOSTIC,null);
+});
+test('settings diagnostics use known numeric movie and report a successful pipeline',async()=>{
+  const c=load(u=>{
+    if(u.includes('themoviedb'))return response(JSON.stringify({imdb_id:'tt1302011',title:'Kung Fu Panda 2'}),u);
+    if(u.includes('?s='))return response('<div id=content_inside><a href=/pelicula/kung-fu-panda-2/ >Movie</a>',u);
+    if(u.includes('/pelicula/'))return response('<a href=https://imdb.com/title/tt1302011/ >IMDb</a>'+
+      '<strong>Audio:</strong>Latino<a service=OnlineVoe data=abc123def456 >Online</a>',u);
+    if(u.includes('voe.sx'))return response('<script type=application/json>'+JSON.stringify([encode(cfg)])+'</script>',u);
+    throw Error('Unexpected URL');
+  });
+  const rendered=JSON.stringify(await c.module.exports.onSettings());
+  assert.match(rendered,/1 fuente encontrada/);
+  assert.match(rendered,/S2 · Ficha del origen/);
+  assert.match(rendered,/P1 · Servidor de vídeo/);
+  assert.ok(!rendered.includes('https://video.example'));
+  assert.equal(c.DIAGNOSTIC,null);
+});
+test('ordinary stream queries never collect a diagnostic request history',async()=>{
+  const c=load(u=>response('{}',u));
+  await c.getStreams('tt0266543','movie');assert.equal(c.DIAGNOSTIC,null);
+});
