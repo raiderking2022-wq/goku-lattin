@@ -44,9 +44,52 @@ test('TV and invalid IDs never trigger network',async()=>{
   assert.equal((await c.getStreams('12','tv')).length,0);
   assert.equal((await c.getStreams('../../secret','movie')).length,0);
 });
-test('numeric IDs without injected metadata key fail closed',async()=>{
-  const c=load(()=>{throw Error('unexpected request');});c.TMDB_API_KEY='';
-  assert.equal((await c.getStreams('459003','movie')).length,0);
+test('numeric IDs resolve via public mapping when runtime key is absent',async()=>{
+  const seen=[];
+  const c=load(url=>{
+    seen.push(url);
+    if(url.includes('query.wikidata.org'))return response(JSON.stringify({results:{bindings:[{imdb:{value:'tt0266543'}}]}}),url);
+    if(url.includes('cinemeta'))return response(JSON.stringify({meta:{name:'Finding Nemo'}}),url);
+    throw Error('Unexpected URL');
+  });c.TMDB_API_KEY='';
+  const meta=await c.metadata('12');
+  assert.equal(meta.imdb,'tt0266543');assert.equal(meta.titles[0],'Finding Nemo');
+  assert.ok(!seen.some(u=>u.includes('api.themoviedb.org')||u.includes('api_key=')));
+});
+test('invalid runtime key uses fallback, but never logs secrets or request URLs',async()=>{
+  const c=load(url=>{
+    if(url.includes('themoviedb'))return Promise.resolve({ok:false,status:401});
+    if(url.includes('wikidata'))return response(JSON.stringify({results:{bindings:[{imdb:{value:'tt0266543'}}]}}),url);
+    return response(JSON.stringify({meta:{name:'Finding Nemo'}}),url);
+  });
+  const logs=[];c.console={log:s=>logs.push(s)};c.TMDB_API_KEY='secret-test-value';
+  assert.equal((await c.metadata('12')).imdb,'tt0266543');
+  assert.ok(!logs.join(' ').includes('secret-test-value'));
+  assert.ok(!logs.join(' ').includes('https://'));
+});
+test('missing public mapping fails without title guesses',async()=>{
+  const c=load(u=>response(JSON.stringify({results:{bindings:[]}}),u));c.TMDB_API_KEY='';
+  assert.equal((await c.getStreams('99999999','movie')).length,0);
+});
+test('network errors and signed URLs never enter diagnostic logs',async()=>{
+  const c=load(()=>Promise.reject(new Error('fetch https://x.example?api_key=secret')));
+  const logs=[];c.console={log:s=>logs.push(s)};
+  assert.equal((await c.getStreams('tt0266543','movie')).length,0);
+  assert.ok(logs.some(s=>s.includes('network_or_parse_error')));
+  assert.ok(!logs.join(' ').includes('secret'));
+});
+test('title search retries without English article and still requires exact IMDb',async()=>{
+  const seen=[];
+  const c=load(url=>{
+    seen.push(url);
+    if(url.includes('?s=The%20Matrix'))return response('<div id=content_inside></div>',url);
+    if(url.includes('?s=Matrix'))return response('<div id=content_inside><a href=/pelicula/matrix/ >Matrix</a>',url);
+    if(url.endsWith('/pelicula/matrix/'))return response('<a href=https://www.imdb.com/title/tt0133093/ >IMDb</a>',url);
+    throw Error('Unexpected URL');
+  });
+  const movie=await c.findMovie({imdb:'tt0133093',titles:['The Matrix']});
+  assert.equal(movie.info.imdb,'tt0133093');
+  assert.ok(seen.some(u=>u.includes('?s=Matrix')));
 });
 test('exact IMDb match and branded output, follows VOE redirect, checks child HLS',async()=>{
   const seen=[];

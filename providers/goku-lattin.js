@@ -1,10 +1,16 @@
-/* Goku lattin 0.1.0. Native Nuvio provider. No eval, Node imports or embedded keys.
+/* Goku lattin 0.1.1. Native Nuvio provider. No eval, Node imports or embedded keys.
  * Presentation branding is not network anonymity. Only use authorized content.
  */
 'use strict';
 var NAME = 'Goku lattin';
 var BASE = 'https://www.cinecalidad.my';
 var UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36';
+function report(stage, detail) {
+  // Never log request URLs, credentials, signed streams or upstream filenames.
+  if (typeof console !== 'undefined' && typeof console.log === 'function') {
+    console.log('[Goku lattin 0.1.1] ' + stage + (detail ? ': ' + detail : ''));
+  }
+}
 
 function absolute(value, base) {
   value = String(value || '').replace(/&amp;/g, '&').replace(/\\\//g, '/').trim();
@@ -37,7 +43,9 @@ function request(url, referer) {
   var options = { headers: { 'User-Agent': UA, 'Referer': referer || BASE + '/' } };
   if (controller) options.signal = controller.signal;
   return fetch(url, options).then(function (r) {
-    if (!r.ok) throw new Error('http_' + r.status);
+    if (r.ok === false || (typeof r.status === 'number' && r.status >= 400)) {
+      throw new Error('http_' + r.status);
+    }
     return r.text().then(function (body) {
       if (body.length > 2500000) throw new Error('response_too_large');
       return { text: body, url: r.url || url };
@@ -115,25 +123,59 @@ function movieInfo(html) {
 function metadata(id) {
   var imdb = /^(?:imdb:)?(tt\d{5,12})$/.exec(id);
   if (imdb) {
-    return request('https://v3-cinemeta.strem.io/meta/movie/' + imdb[1] + '.json')
-      .then(function (r) {
-        var meta = JSON.parse(r.text).meta || {};
-        return { imdb: imdb[1], titles: [meta.name].filter(Boolean) };
-      });
+    return imdbMetadata(imdb[1]);
   }
   var numeric = /^(?:tmdb:)?(\d{1,10})$/.exec(id);
   var key = typeof TMDB_API_KEY !== 'undefined' ? TMDB_API_KEY : '';
-  if (!numeric || !key) return Promise.reject(new Error('metadata_unavailable'));
+  if (!numeric) return Promise.reject(new Error('invalid_id'));
+  function withoutKey() {
+    report('metadata', 'public_id_lookup');
+    // Public Wikidata ID mapping. The numeric identifier is validated above;
+    // no API key, title history or device identifier is sent.
+    var query = 'SELECT ?imdb WHERE {?item wdt:P4947 "' + numeric[1] +
+      '"; wdt:P345 ?imdb} LIMIT 1';
+    return request('https://query.wikidata.org/sparql?query=' +
+      encodeURIComponent(query) + '&format=json', 'https://query.wikidata.org/').then(function (r) {
+      var data = JSON.parse(r.text);
+      var bindings = data.results && data.results.bindings;
+      var value = bindings && bindings[0] && bindings[0].imdb && bindings[0].imdb.value;
+      if (!/^tt\d{5,12}$/.test(value || '')) throw new Error('metadata_id_not_found');
+      return imdbMetadata(value);
+    });
+  }
+  if (!key) return withoutKey();
   // Key is injected by Nuvio. Never stored, logged or sent to other hosts.
   return request('https://api.themoviedb.org/3/movie/' + numeric[1] +
     '?language=es-MX&api_key=' + encodeURIComponent(key)).then(function (r) {
     var meta = JSON.parse(r.text);
     if (!/^tt\d{5,12}$/.test(meta.imdb_id || '')) throw new Error('missing_imdb');
     return { imdb: meta.imdb_id, titles: [meta.title, meta.original_title].filter(Boolean) };
+  }).catch(function (e) {
+    report('metadata_primary_failed', safeError(e));
+    return withoutKey();
   });
+}
+function imdbMetadata(id) {
+  return request('https://v3-cinemeta.strem.io/meta/movie/' + id + '.json',
+    'https://v3-cinemeta.strem.io/').then(function (r) {
+      var meta = JSON.parse(r.text).meta || {};
+      if (!meta.name) throw new Error('metadata_title_missing');
+      return { imdb: id, titles: [meta.name] };
+    });
+}
+function safeError(e) {
+  var value = e && e.message || '';
+  // Only developer-owned error codes; network errors can contain secret URLs.
+  return /^(?:http_\d+|metadata_[a-z_]+|missing_imdb|invalid_id|not_hls|empty_playlist|playlist_depth|response_too_large)$/.test(value) ?
+    value : 'network_or_parse_error';
 }
 function findMovie(meta) {
   var queries = meta.titles.slice(0, 2);
+  // Source titles can omit leading articles (e.g. "The Matrix" → "Matrix").
+  var withoutArticle = queries[0] && queries[0].replace(/^(?:the|a|an|el|la|los|las|un|una)\s+/i, '');
+  if (withoutArticle && withoutArticle !== queries[0] && queries.indexOf(withoutArticle) === -1) {
+    queries.push(withoutArticle);
+  }
   // A distinctive first word helps when a translated title differs.
   if (queries[0] && queries[0].split(/[ :.,]+/)[0].length >= 5) {
     queries.push(queries[0].split(/[ :.,]+/)[0]);
@@ -148,13 +190,15 @@ function findMovie(meta) {
       var info = movieInfo(r.text);
       // Exact IMDb match, not loose title matching: avoids wrong remakes.
       if (info.imdb === meta.imdb) found = { url: r.url, info: info };
-    }).catch(function () {}).then(function () { return inspect(urls, i + 1); });
+    }).catch(function (e) { report('movie_lookup_failed', safeError(e)); })
+      .then(function () { return inspect(urls, i + 1); });
   }
   function search(i) {
     if (found || i >= queries.length) return Promise.resolve(found);
     return request(BASE + '/?s=' + encodeURIComponent(queries[i])).then(function (r) {
       return inspect(candidates(r.text), 0);
-    }).catch(function () {}).then(function () { return search(i + 1); });
+    }).catch(function (e) { report('search_failed', safeError(e)); })
+      .then(function () { return search(i + 1); });
   }
   return search(0);
 }
@@ -201,15 +245,12 @@ function playlist(url, referer, depth) {
     return { height: height };
   });
 }
-function getStreams(tmdbId, mediaType, season, episode) {
-  if (mediaType !== 'movie') return Promise.resolve([]);
-  var id = String(tmdbId);
-  if (!/^(?:(?:imdb:)?tt\d{5,12}|(?:tmdb:)?\d{1,10})$/.test(id)) return Promise.resolve([]);
-  return metadata(id).then(findMovie).then(function (movie) {
-    if (!movie) return [];
+function streamsForMovie(movie) {
+    if (!movie) { report('movie_not_found'); return []; }
+    report('online_players', String(movie.info.players.length));
     return Promise.all(movie.info.players.map(function (player) {
       return resolvePlayer(player, movie.url).then(function (resolved) {
-        if (!resolved) return null;
+        if (!resolved) { report('player_config_not_found'); return null; }
         return playlist(resolved.config.source, resolved.referer, 0).then(function (probe) {
           var quality = probe.height ? probe.height + 'p' : 'Auto';
           var audio = /latino/i.test(movie.info.audio) ? 'Latino' :
@@ -227,7 +268,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } }
           };
         });
-      }).catch(function () { return null; });
+      }).catch(function (e) { report('player_failed', safeError(e)); return null; });
     })).then(function (results) {
       var seen = {};
       return results.filter(function (s) {
@@ -239,6 +280,17 @@ function getStreams(tmdbId, mediaType, season, episode) {
         return s;
       });
     });
-  }).catch(function () { return []; });
+}
+function getStreams(tmdbId, mediaType, season, episode) {
+  var type = String(mediaType || '').toLowerCase();
+  if (type !== 'movie' && type !== 'movies' && type !== 'film') return Promise.resolve([]);
+  var id = String(tmdbId).trim();
+  if (!/^(?:(?:imdb:)?tt\d{5,12}|(?:tmdb:)?\d{1,10})$/.test(id)) return Promise.resolve([]);
+  report('start', /^\d+$/.test(id) || /^tmdb:/.test(id) ? 'tmdb' : 'imdb');
+  return metadata(id).then(findMovie).then(streamsForMovie).then(function (streams) {
+    report('streams', String(streams.length)); return streams;
+  }).catch(function (e) {
+    report('failed', safeError(e)); return [];
+  });
 }
 module.exports = { getStreams: getStreams };
